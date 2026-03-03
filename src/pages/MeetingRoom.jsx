@@ -563,12 +563,28 @@ const MeetingRoom = () => {
                     });
                     setParticipantNames(newNames);
 
-                    // Auto-initiate WebRTC offers to everyone already in the room
-                    // (This handles the case where we joined from a new tab and need to see existing users)
+                    // Sync participants list to UI peers state (adds placeholders)
+                    setPeers(prev => {
+                        let updated = [...prev];
+                        let changed = false;
+                        data.users.forEach(u => {
+                            if (u.userId !== myPeerId.current && !updated.find(p => p.id === u.userId)) {
+                                console.log('Adding placeholder for existing participant:', u.userId);
+                                updated.push({ id: u.userId, stream: null });
+                                changed = true;
+                            }
+                        });
+                        return changed ? updated : prev;
+                    });
+
+                    // Systematic Initiation: Use ID comparison to decide who initiates
+                    // This ensures precisely one side is the offerer, even if both see each other join.
                     data.users.forEach(u => {
-                        if (u.userId !== myPeerId.current && !peerConnections.current[u.userId]) {
-                            console.log('Auto-initiating connection to existing participant:', u.userId);
-                            createPeerConnection(u.userId, true);
+                        const remoteId = u.userId;
+                        if (remoteId !== myPeerId.current) {
+                            const isOfferer = myPeerId.current < remoteId;
+                            console.log(`Setting up connection to ${remoteId}. IsOfferer: ${isOfferer}`);
+                            createPeerConnection(remoteId, isOfferer);
                         }
                     });
 
@@ -594,8 +610,14 @@ const MeetingRoom = () => {
                     setJoinRequests(prev => prev.filter(r => r.userId !== sender_id));
                     setToast(prev => (prev?.targetUserId === sender_id ? null : prev));
 
-                    // Initiate offer to the new participant
-                    createPeerConnection(sender_id, true);
+                    // Use ID comparison for initiation (Polite Peer strategy)
+                    if (myPeerId.current < sender_id) {
+                        console.log('I am the offerer for new participant:', sender_id);
+                        createPeerConnection(sender_id, true);
+                    } else {
+                        console.log('Waiting for offer from new participant:', sender_id);
+                        createPeerConnection(sender_id, false);
+                    }
                     break;
                 case 'offer':
                     console.log('Received WebRTC offer from:', sender_id);
@@ -835,7 +857,8 @@ const MeetingRoom = () => {
     };
 
     const handleOffer = async (remotePeerId, offer) => {
-        const pc = createPeerConnection(remotePeerId, false);
+        // Use existing PC if we already set it up (common in polite peer scenarios)
+        const pc = peerConnections.current[remotePeerId] || createPeerConnection(remotePeerId, false);
         try {
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await pc.createAnswer();
