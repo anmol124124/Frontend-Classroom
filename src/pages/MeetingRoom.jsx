@@ -47,7 +47,7 @@ const VideoTile = ({ peerId, stream, username, isMuted, isHandRaised, isLocal, i
                         muted={isLocal}
                         onContextMenu={(e) => e.preventDefault()}
 
-            
+
                         ref={el => { if (el && el.srcObject !== stream) el.srcObject = stream; }}
                         style={{ width: '100%', height: '100%', objectFit: 'cover', transform }}
                     />
@@ -562,6 +562,15 @@ const MeetingRoom = () => {
                         newNames[u.userId] = u.username;
                     });
                     setParticipantNames(newNames);
+
+                    // Auto-initiate WebRTC offers to everyone already in the room
+                    // (This handles the case where we joined from a new tab and need to see existing users)
+                    data.users.forEach(u => {
+                        if (u.userId !== myPeerId.current && !peerConnections.current[u.userId]) {
+                            console.log('Auto-initiating connection to existing participant:', u.userId);
+                            createPeerConnection(u.userId, true);
+                        }
+                    });
 
                     // Sync join requests and toast: if someone is now a participant, they are no longer waiting
                     setJoinRequests(prev => {
