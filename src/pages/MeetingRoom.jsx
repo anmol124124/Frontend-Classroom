@@ -45,6 +45,9 @@ const VideoTile = ({ peerId, stream, username, isMuted, isHandRaised, isLocal, i
                         autoPlay
                         playsInline
                         muted={isLocal}
+                        onContextMenu={(e) => e.preventDefault()}
+
+            
                         ref={el => { if (el && el.srcObject !== stream) el.srcObject = stream; }}
                         style={{ width: '100%', height: '100%', objectFit: 'cover', transform }}
                     />
