@@ -52,7 +52,7 @@ function App() {
 
             {/* Student dashboard - only accessible if user is student */}
             <Route
-              path="/student"
+              path="/student-dashboard"
               element={
                 <ProtectedRoute roles={['student']}>
                   <StudentDashboard />

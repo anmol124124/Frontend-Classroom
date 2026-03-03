@@ -11,8 +11,8 @@ const Login = () => {
     const [error, setError] = useState('');  // Error messages to display
     const [loading, setLoading] = useState(false);  // Loading state while submitting
 
-    // Get login function from auth context
-    const { login } = useAuth();
+    // Get authentication state from context
+    const { login, isAuthenticated, user, loading: authLoading } = useAuth();
     // Hook to navigate to different pages
     const navigate = useNavigate();
     // Get location info (used to redirect to intended page after login)
@@ -20,11 +20,11 @@ const Login = () => {
 
     // Auto-redirect if user is already logged in
     useEffect(() => {
-        const currentUser = JSON.parse(localStorage.getItem('user'));
-        if (currentUser) {
-            navigate(`/${currentUser.role}`, { replace: true });
+        if (!authLoading && isAuthenticated && user) {
+            const dashboardPath = user.role === 'admin' ? '/admin' : user.role === 'tutor' ? '/tutor' : '/student-dashboard';
+            navigate(dashboardPath, { replace: true });
         }
-    }, [navigate]);
+    }, [isAuthenticated, user, authLoading, navigate]);
 
     // Handle form submission when user clicks "Sign In"
     const handleSubmit = async (e) => {
@@ -36,7 +36,8 @@ const Login = () => {
             // Call login function with email and password
             const user = await login(email, password);
             // Determine where to redirect: originally intended page or role's dashboard
-            const from = location.state?.from?.pathname || `/${user.role}`;
+            const dashboardPath = user.role === 'admin' ? '/admin' : user.role === 'tutor' ? '/tutor' : '/student-dashboard';
+            const from = location.state?.from?.pathname || dashboardPath;
             // Navigate to the dashboard
             navigate(from, { replace: true });
         } catch (err) {

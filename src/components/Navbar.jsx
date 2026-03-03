@@ -26,7 +26,7 @@ const Navbar = () => {
             {/* Logo/Brand - Click to go to user's dashboard */}
             <div className="nav-brand">
                 {/* Navigate to user's role-specific dashboard */}
-                <Link to={`/${user.role}`}>Course Era</Link>
+                <Link to={user.role === 'student' ? '/student-dashboard' : `/${user.role}`}>Course Era</Link>
             </div>
             {/* Right side of navbar - User role and logout button */}
             <div className="nav-links">

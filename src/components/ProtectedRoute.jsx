@@ -25,7 +25,7 @@ const ProtectedRoute = ({ children, roles }) => {
     // If this route requires specific roles and user doesn't have them
     if (roles && !roles.includes(user.role)) {
         // Redirect user to their role-specific dashboard
-        const dashboardPath = user.role === 'admin' ? '/admin' : user.role === 'tutor' ? '/tutor' : '/student';
+        const dashboardPath = user.role === 'admin' ? '/admin' : user.role === 'tutor' ? '/tutor' : '/student-dashboard';
         return <Navigate to={dashboardPath} replace />;
     }
 
