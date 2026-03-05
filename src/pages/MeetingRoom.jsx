@@ -159,7 +159,7 @@ const MeetingRoom = () => {
     const [isMuted, setIsMuted] = useState(false);
     const [isVideoOff, setIsVideoOff] = useState(false);
     const [isScreenSharing, setIsScreenSharing] = useState(false);
-    const [activePresenterId, setActivePresenterId] = useState(null); // ID of the participant currently sharing screen
+    const [screenSharingUser, setScreenSharingUser] = useState(null); // ID of the participant currently sharing screen
     const [activeSpeakerId, setActiveSpeakerId] = useState(null); // ID of the current active speaker
     const [participantNames, setParticipantNames] = useState({}); // UUID -> Name mapping
     const [mutedPeers, setMutedPeers] = useState({}); // UUID -> boolean mapping
@@ -554,7 +554,7 @@ const MeetingRoom = () => {
                 case 'participants':
                     console.log('Received participants list:', data.users);
                     if (data.presenter !== undefined) {
-                        setActivePresenterId(data.presenter);
+                        setScreenSharingUser(data.presenter);
                     }
                     const newNames = {};
                     data.users.forEach(u => {
@@ -632,7 +632,7 @@ const MeetingRoom = () => {
                     break;
                 case 'leave':
                     console.log('Participant left:', sender_id);
-                    if (activePresenterId === sender_id) setActivePresenterId(null);
+                    if (screenSharingUser === sender_id) setScreenSharingUser(null);
 
                     // Clear join request and toast if they left while waiting
                     setJoinRequests(prev => prev.filter(r => r.userId !== sender_id));
@@ -642,7 +642,15 @@ const MeetingRoom = () => {
                     break;
                 case 'screen-share':
                     console.log('Screen share update from:', sender_id, data.isSharing);
-                    setActivePresenterId(data.isSharing ? sender_id : null);
+                    setScreenSharingUser(data.isSharing ? sender_id : null);
+                    break;
+                case 'screen-share-started':
+                    console.log('Screen share started by:', sender_id);
+                    setScreenSharingUser(sender_id);
+                    break;
+                case 'screen-share-stopped':
+                    console.log('Screen share stopped by:', sender_id);
+                    setScreenSharingUser(null);
                     break;
                 case 'mic-status':
                     console.log('Mic status update from:', sender_id, data.isMuted);
@@ -1181,13 +1189,13 @@ const MeetingRoom = () => {
                 // Update local preview
                 setLocalStream(stream);
                 setIsScreenSharing(true);
-                setActivePresenterId(myPeerId.current);
+                setScreenSharingUser(myPeerId.current);
 
-                // Broadcast screen share status
+                // Broadcast screen share started
                 if (socket.current?.readyState === WebSocket.OPEN) {
                     socket.current.send(JSON.stringify({
-                        type: 'screen-share',
-                        isSharing: true
+                        type: 'screen-share-started',
+                        userId: myPeerId.current
                     }));
                 }
 
@@ -1236,7 +1244,7 @@ const MeetingRoom = () => {
         setLocalStream(backgroundEffect === 'none' ? localStreamRef.current : new MediaStream([cameraTrack, ...localStreamRef.current.getAudioTracks()]));
 
         setIsScreenSharing(false);
-        setActivePresenterId(null);
+        setScreenSharingUser(null);
 
         // Broadcast video status restoration (camera back on)
         if (socket.current?.readyState === WebSocket.OPEN) {
@@ -1247,11 +1255,11 @@ const MeetingRoom = () => {
             }));
         }
 
-        // Broadcast screen share stop
+        // Broadcast screen share stopped
         if (socket.current?.readyState === WebSocket.OPEN) {
             socket.current.send(JSON.stringify({
-                type: 'screen-share',
-                isSharing: false
+                type: 'screen-share-stopped',
+                userId: myPeerId.current
             }));
         }
     };
@@ -1394,7 +1402,7 @@ const MeetingRoom = () => {
             )}
 
             {/* Presentation Banner */}
-            {activePresenterId && (
+            {screenSharingUser && (
                 <div style={{
                     background: '#3b82f6',
                     color: '#fff',
@@ -1410,9 +1418,9 @@ const MeetingRoom = () => {
                     zIndex: 5
                 }}>
                     <MonitorUp size={18} />
-                    {activePresenterId === myPeerId.current
+                    {screenSharingUser === myPeerId.current
                         ? 'You are presenting your screen'
-                        : `${peerNamesRef.current[activePresenterId] || 'Someone'}'s Presentation`}
+                        : `${peerNamesRef.current[screenSharingUser] || 'Someone'}'s Presentation`}
                 </div>
             )}
 
@@ -1423,27 +1431,27 @@ const MeetingRoom = () => {
                     display: 'flex',
                     background: '#f3f4f6',
                     overflow: 'hidden',
-                    padding: activePresenterId ? '0' : '2rem',
+                    padding: screenSharingUser ? '0' : '2rem',
                     position: 'relative',
                     transition: 'all 0.3s ease'
                 }}>
-                    {activePresenterId ? (
+                    {screenSharingUser ? (
                         // Presentation Layout (Zoom Mode)
                         <div style={{ display: 'flex', width: '100%', height: '100%' }}>
                             {/* Main Stage */}
                             <div style={{ flex: 1, background: '#111827', position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                                <div className={activeSpeakerId === (activePresenterId === myPeerId.current ? 'local' : activePresenterId) ? 'active-speaker' : ''} style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '12px', overflow: 'hidden' }}>
+                                <div className={activeSpeakerId === (screenSharingUser === myPeerId.current ? 'local' : screenSharingUser) ? 'active-speaker' : ''} style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '12px', overflow: 'hidden' }}>
                                     <video
                                         autoPlay
                                         playsInline
-                                        muted={activePresenterId === myPeerId.current}
+                                        muted={screenSharingUser === myPeerId.current}
                                         ref={el => {
                                             if (el) {
                                                 let targetStream = null;
-                                                if (activePresenterId === myPeerId.current) {
+                                                if (screenSharingUser === myPeerId.current) {
                                                     targetStream = localStream;
                                                 } else {
-                                                    const presenter = peers.find(p => p.id === activePresenterId);
+                                                    const presenter = peers.find(p => p.id === screenSharingUser);
                                                     if (presenter) targetStream = presenter.stream;
                                                 }
                                                 if (el.srcObject !== targetStream) {
@@ -1457,12 +1465,12 @@ const MeetingRoom = () => {
                                             width: 'auto',
                                             height: 'auto',
                                             objectFit: 'contain',
-                                            transform: activePresenterId === myPeerId.current && !isScreenSharing ? 'scaleX(-1)' : 'none'
+                                            transform: screenSharingUser === myPeerId.current && !isScreenSharing ? 'scaleX(-1)' : 'none'
                                         }}
                                     />
                                 </div>
                                 <div style={{ position: 'absolute', bottom: '1.5rem', left: '1.5rem', background: 'rgba(0, 0, 0, 0.6)', color: '#fff', padding: '0.5rem 1rem', borderRadius: '8px', fontSize: '0.85rem', zIndex: 10 }}>
-                                    {activePresenterId === myPeerId.current ? 'Your Presentation' : `${peerNamesRef.current[activePresenterId] || 'Someone'}'s Presentation`}
+                                    {screenSharingUser === myPeerId.current ? 'Your Presentation' : `${peerNamesRef.current[screenSharingUser] || 'Someone'}'s Presentation`}
                                 </div>
                             </div>
 
@@ -1478,7 +1486,7 @@ const MeetingRoom = () => {
                                 overflowY: 'auto'
                             }}>
                                 {/* Local Video as Thumbnail (if not presenting) */}
-                                {activePresenterId !== myPeerId.current && (
+                                {screenSharingUser !== myPeerId.current && (
                                     <VideoTile
                                         peerId="local"
                                         stream={localStream}
@@ -1494,7 +1502,7 @@ const MeetingRoom = () => {
                                 )}
                                 {/* Remote Peers as Thumbnails */}
                                 {peers.map(peer => (
-                                    peer.id !== activePresenterId && (
+                                    peer.id !== screenSharingUser && (
                                         <VideoTile
                                             key={peer.id}
                                             peerId={peer.id}
@@ -1643,7 +1651,7 @@ const MeetingRoom = () => {
                                     </div>
                                     <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
                                         {raisedHands[peer.id] && <Hand size={14} color="#fbbf24" fill="#fbbf24" />}
-                                        {activePresenterId === peer.id && <MonitorUp size={14} color="#3b82f6" />}
+                                        {screenSharingUser === peer.id && <MonitorUp size={14} color="#3b82f6" />}
                                         {mutedPeers[peer.id] ? <MicOff size={14} color="#ef4444" /> : <Mic size={14} color="#10b981" />}
 
                                         {myRole === 'admin' && (
