@@ -331,8 +331,11 @@ const MeetingRoom = () => {
             } catch (err) {
                 console.error('Failed to access local media:', err);
 
-                // Only set global error if it's not an AbortError or NotAllowedError that might be transient
-                if (err.name !== 'AbortError') {
+                    // Handle permission denial gracefully
+                if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                    console.warn("Camera/Mic permission denied. Joining without media.", err);
+                } else if (err.name !== 'AbortError') {
+                    // Only set global error if it's not an AbortError or NotAllowedError
                     setError('Could not access camera/microphone. Please ensure you have given permission.');
                 }
 
@@ -437,9 +440,7 @@ const MeetingRoom = () => {
 
                 if (role === 'admin') {
                     const stream = await initializeLocalMedia();
-                    if (stream) {
-                        setupSignaling(room_id, stream);
-                    }
+                    setupSignaling(room_id, stream);
                 } else {
                     // Student: Connect to signaling without media first (to prevent camera flash)
                     setupSignaling(room_id, null);
@@ -729,7 +730,7 @@ const MeetingRoom = () => {
                     // Now that we are approved, we MUST start the camera before WebRTC kicks in
                     const stream = await initializeLocalMedia();
                     setLoading(false);
-                    if (stream && socket.current?.readyState === WebSocket.OPEN) {
+                    if (socket.current?.readyState === WebSocket.OPEN) {
                         const email = authUser?.email || '';
                         const role = (email === 'admin@gmail.com' || authUser?.role === 'admin') ? 'admin' : 'student';
                         socket.current.send(JSON.stringify({
@@ -764,6 +765,7 @@ const MeetingRoom = () => {
     };
 
     const setupAudioAnalysis = (peerId, stream) => {
+        if (!stream) return;
         try {
             const audioTrack = stream.getAudioTracks()[0];
             if (!audioTrack) return;
