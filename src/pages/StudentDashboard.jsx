@@ -6,24 +6,12 @@ import { useNavigate } from 'react-router-dom';
 
 const StudentDashboard = () => {
     const navigate = useNavigate();
-    // State for courses list
-    const [courses, setCourses] = useState([]);
-    const [loading, setLoading] = useState(true);  // Loading state while fetching
     const [error, setError] = useState('');  // Error messages
+    const [loading, setLoading] = useState(true);  // Loading state while fetching
 
     // Meeting states
     const [meetings, setMeetings] = useState([]);
 
-    // Function to fetch all courses from backend
-    const fetchCourses = async () => {
-        try {
-            const response = await api.get('/courses/');
-            setCourses(response.data);
-        } catch (err) {
-            setError('Failed to fetch courses. Please try again.');
-            console.error(err);
-        }
-    };
 
     // Function to fetch all meetings from backend
     const fetchMeetings = async () => {
@@ -40,7 +28,7 @@ const StudentDashboard = () => {
     useEffect(() => {
         const loadData = async () => {
             setLoading(true);
-            await Promise.all([fetchCourses(), fetchMeetings()]);
+            await fetchMeetings();
             setLoading(false);
         };
         loadData();
@@ -57,7 +45,7 @@ const StudentDashboard = () => {
             <header className="dashboard-header">
                 <div>
                     <h1>Student Dashboard</h1>
-                    <p className="text-muted">Browse and explore available courses</p>
+                    <p className="text-muted">Stay active on your live meetings</p>
                 </div>
             </header>
 
@@ -106,35 +94,6 @@ const StudentDashboard = () => {
                 </div>
             </div>
 
-            {/* Display courses section */}
-            <div className="course-list-section">
-                <h2>Available Courses</h2>
-                <div className="course-grid">
-                    {loading ? (
-                        [1, 2, 3].map(i => (
-                            <div key={i} className="course-card"></div>
-                        ))
-                    ) : (
-                        <>
-                            {courses.map(course => (
-                                <div key={course.id} className="stat-card course-card">
-                                    <h3>{course.title}</h3>
-                                    <p>{course.description || "No description available for this course."}</p>
-                                    <div className="course-footer">
-                                        <span className="course-id">ID: {course.id}</span>
-                                        <button className="btn-edit" onClick={() => alert('Enrollment feature coming soon!')}>View Details</button>
-                                    </div>
-                                </div>
-                            ))}
-                            {courses.length === 0 && (
-                                <div className="text-center" style={{ gridColumn: '1 / -1', padding: '3rem' }}>
-                                    <p className="text-muted">No courses are currently available.</p>
-                                </div>
-                            )}
-                        </>
-                    )}
-                </div>
-            </div>
         </div>
     );
 };

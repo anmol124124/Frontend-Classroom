@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import api from '../api/api';
 import { useAuth } from '../context/AuthContext';
 import useScreenRecorder from '../hooks/useScreenRecorder';
-import { Mic, MicOff, Video, VideoOff, Circle, Square, PhoneOff, Users, MonitorUp, Hand, X, MessageSquare, Send, Image as ImageIcon, Upload, Settings, Check, XCircle, CheckCircle, ShieldAlert } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, Circle, Square, PhoneOff, Users, Monitor, MonitorUp, Hand, X, MessageSquare, Send, Image as ImageIcon, Upload, Settings, Check, XCircle, CheckCircle, ShieldAlert } from 'lucide-react';
 import { BackgroundProcessor } from '../utils/BackgroundProcessor';
 
 
@@ -138,6 +138,7 @@ const MeetingRoom = () => {
     const [meeting, setMeeting] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const presentationVideoRef = useRef(null);
 
     const { isRecording, recordingTime, recordingStream, formatTime, startRecording, stopRecording } = useScreenRecorder();
 
@@ -160,6 +161,7 @@ const MeetingRoom = () => {
     const [isVideoOff, setIsVideoOff] = useState(false);
     const [isScreenSharing, setIsScreenSharing] = useState(false);
     const [screenSharingUser, setScreenSharingUser] = useState(null); // ID of the participant currently sharing screen
+    const screenSharingUserRef = useRef(null);
     const [activeSpeakerId, setActiveSpeakerId] = useState(null); // ID of the current active speaker
     const [participantNames, setParticipantNames] = useState({}); // UUID -> Name mapping
     const [mutedPeers, setMutedPeers] = useState({}); // UUID -> boolean mapping
@@ -183,6 +185,7 @@ const MeetingRoom = () => {
     const [captionsText, setCaptionsText] = useState('');
     const recognitionRef = useRef(null);
     const isCaptionsEnabledRef = useRef(false);
+    const [joinMode, setJoinMode] = useState('normal');
     const chatEndRef = useRef(null);
 
     // Background features state
@@ -331,7 +334,7 @@ const MeetingRoom = () => {
             } catch (err) {
                 console.error('Failed to access local media:', err);
 
-                    // Handle permission denial gracefully
+                // Handle permission denial gracefully
                 if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
                     console.warn("Camera/Mic permission denied. Joining without media.", err);
                 } else if (err.name !== 'AbortError') {
@@ -433,14 +436,21 @@ const MeetingRoom = () => {
                 const response = await api.get(`/meetings/room/${room_id}`);
                 setMeeting(response.data);
 
+                const currentJoinMode = localStorage.getItem('joinMode') || 'normal';
+                setJoinMode(currentJoinMode);
+
                 // For Admins: Start media and signaling immediately
                 // For Students: Start signaling FIRST (without media) to check approval status
                 const email = authUser?.email || '';
                 const role = (email === 'admin@gmail.com' || authUser?.role === 'admin') ? 'admin' : 'student';
 
                 if (role === 'admin') {
-                    const stream = await initializeLocalMedia();
-                    setupSignaling(room_id, stream);
+                    if (currentJoinMode === 'normal') {
+                        const stream = await initializeLocalMedia();
+                        setupSignaling(room_id, stream);
+                    } else {
+                        setupSignaling(room_id, null);
+                    }
                 } else {
                     // Student: Connect to signaling without media first (to prevent camera flash)
                     setupSignaling(room_id, null);
@@ -474,17 +484,13 @@ const MeetingRoom = () => {
                 }
                 const average = sum / dataArray.length;
 
-                if (average > maxVolume && average > VOLUME_THRESHOLD) {
-                    // Check if it's the local user and they are muted
-                    if (peerId === 'local' && isMuted) return;
-
+                if (average > VOLUME_THRESHOLD && average > maxVolume) {
                     maxVolume = average;
                     currentLoudestId = peerId;
                 }
             });
 
             if (currentLoudestId) {
-                // If it's local, we'll keep using the 'local' string for ID check
                 setActiveSpeakerId(currentLoudestId);
                 if (speakerTimeoutRef.current) clearTimeout(speakerTimeoutRef.current);
                 speakerTimeoutRef.current = setTimeout(() => {
@@ -499,31 +505,70 @@ const MeetingRoom = () => {
             cleanupAllSessions();
         };
 
-    }, [room_id, authUser]);
+    }, [room_id, authUser, navigate]);
+
+    // Unified effect to sync presentation video
+    useEffect(() => {
+        if (!presentationVideoRef.current || !screenSharingUser) {
+            if (presentationVideoRef.current) presentationVideoRef.current.srcObject = null;
+            return;
+        }
+
+        let targetStream = null;
+        if (screenSharingUser === myPeerId.current) {
+            targetStream = localStream;
+        } else {
+            // Find presenter in peers
+            const presenter = peers.find(p => p.id === screenSharingUser);
+            if (presenter) {
+                targetStream = presenter.stream;
+            }
+        }
+
+        if (presentationVideoRef.current.srcObject !== targetStream) {
+            console.log(`Syncing presentation video stage for presenter: ${screenSharingUser} (Stream: ${targetStream ? 'Present' : 'Missing'})`);
+            presentationVideoRef.current.srcObject = targetStream;
+        }
+    }, [screenSharingUser, peers, localStream]);
 
     const setupSignaling = (roomId, stream) => {
-        // Use the environment variable for the signaling server URL
+        // PRE-EMPTIVE CLEANUP: Close existing socket if any before starting a new one
+        if (socket.current) {
+            console.log('Closing existing socket before re-initialization');
+            socket.current.close();
+        }
+
         const socketUrl = `${import.meta.env.VITE_WS_URL}/${roomId}`;
-
         console.log(`Connecting to signaling server at: ${socketUrl}`);
-        socket.current = new WebSocket(socketUrl);
 
-        socket.current.onopen = () => {
+        const currentSocket = new WebSocket(socketUrl);
+        socket.current = currentSocket;
+
+        currentSocket.onopen = () => {
+            if (socket.current !== currentSocket) return;
             console.log('Signaling WebSocket connection opened');
         };
 
-        socket.current.onerror = (err) => {
+        currentSocket.onerror = (err) => {
+            if (socket.current !== currentSocket) return;
             console.error('WebSocket error:', err);
             setError('Connection to signaling server failed.');
             setLoading(false);
         };
 
-        socket.current.onclose = () => {
+        currentSocket.onclose = () => {
+            if (socket.current !== currentSocket) return;
             console.log('Signaling WebSocket connection closed');
             setLoading(false);
         };
 
-        socket.current.onmessage = async (event) => {
+        currentSocket.onmessage = async (event) => {
+            // INSTANCE CHECK: Ensure we only process messages for the CURRENT active socket
+            if (socket.current !== currentSocket) {
+                console.warn('Ignoring message from stale WebSocket instance');
+                return;
+            }
+
             const data = JSON.parse(event.data);
             const { type, sender_id, peer_id, offer, answer, candidate } = data;
 
@@ -539,13 +584,25 @@ const MeetingRoom = () => {
                     myPeerId.current = stableUserId;
 
                     // Immediately send joining info
-                    socket.current.send(JSON.stringify({
-                        type: 'join',
-                        roomId: room_id,
-                        userId: stableUserId,
-                        username: localStorage.getItem('username') || 'Guest',
-                        role: role
-                    }));
+                    const sendJoin = () => {
+                        // Ensure this specific socket is still the active one
+                        if (socket.current !== currentSocket) return;
+
+                        if (currentSocket.readyState === WebSocket.OPEN) {
+                            currentSocket.send(JSON.stringify({
+                                type: 'join',
+                                roomId: room_id,
+                                userId: stableUserId,
+                                username: localStorage.getItem('username') || 'Guest',
+                                role: role,
+                                mode: localStorage.getItem('joinMode') || 'normal'
+                            }));
+                        } else if (currentSocket.readyState === WebSocket.CONNECTING) {
+                            console.log('WebSocket still connecting, retrying join in 100ms...');
+                            setTimeout(sendJoin, 100);
+                        }
+                    };
+                    sendJoin();
 
                     // For Admins, we can stop loading once we've initialized and sent join
                     if (role === 'admin') {
@@ -556,11 +613,14 @@ const MeetingRoom = () => {
                     console.log('Received participants list:', data.users);
                     if (data.presenter !== undefined) {
                         setScreenSharingUser(data.presenter);
+                        screenSharingUserRef.current = data.presenter;
                     }
                     const newNames = {};
                     data.users.forEach(u => {
                         peerNamesRef.current[u.userId] = u.username;
                         newNames[u.userId] = u.username;
+                        // Always store mode in ref for accurate filtering
+                        peerNamesRef.current[u.userId + '_mode'] = u.mode;
                     });
                     setParticipantNames(newNames);
 
@@ -580,9 +640,18 @@ const MeetingRoom = () => {
 
                     // Systematic Initiation: Use ID comparison to decide who initiates
                     // This ensures precisely one side is the offerer, even if both see each other join.
+                    // SKIP WebRTC if either user is in companion mode, UNLESS one is a presenter
                     data.users.forEach(u => {
                         const remoteId = u.userId;
-                        if (remoteId !== myPeerId.current) {
+                        const remoteIsCompanion = u.mode === 'companion';
+                        const meIsCompanion = localStorage.getItem('joinMode') === 'companion';
+
+                        const currentPresenter = data.presenter;
+                        const shouldConnect = (!remoteIsCompanion && !meIsCompanion) ||
+                            (remoteId === currentPresenter) || // Someone is sharing, connect to them
+                            (myPeerId.current === currentPresenter); // I am sharing, connect to everyone
+
+                        if (remoteId !== myPeerId.current && shouldConnect && !peerConnections.current[remoteId]) {
                             const isOfferer = myPeerId.current < remoteId;
                             console.log(`Setting up connection to ${remoteId}. IsOfferer: ${isOfferer}`);
                             createPeerConnection(remoteId, isOfferer);
@@ -612,12 +681,24 @@ const MeetingRoom = () => {
                     setToast(prev => (prev?.targetUserId === sender_id ? null : prev));
 
                     // Use ID comparison for initiation (Polite Peer strategy)
-                    if (myPeerId.current < sender_id) {
-                        console.log('I am the offerer for new participant:', sender_id);
-                        createPeerConnection(sender_id, true);
-                    } else {
-                        console.log('Waiting for offer from new participant:', sender_id);
-                        createPeerConnection(sender_id, false);
+                    // SKIP WebRTC if either user is in companion mode, UNLESS one is a presenter
+                    const remoteIsCompanion = data.mode === 'companion';
+                    const meIsCompanion = localStorage.getItem('joinMode') === 'companion';
+
+                    const shouldConnect = (!remoteIsCompanion && !meIsCompanion) ||
+                        (sender_id === screenSharingUser) || // New user is presenter
+                        (myPeerId.current === screenSharingUser); // I am presenter
+
+                    if (shouldConnect && !peerConnections.current[sender_id]) {
+                        if (myPeerId.current < sender_id) {
+                            console.log('I am the offerer for new participant:', sender_id);
+                            createPeerConnection(sender_id, true);
+                        } else {
+                            console.log('Waiting for offer from new participant:', sender_id);
+                            createPeerConnection(sender_id, false);
+                        }
+                    } else if (remoteIsCompanion || meIsCompanion) {
+                        console.log('Skipping WebRTC connection for companion user (not presenting):', sender_id);
                     }
                     break;
                 case 'offer':
@@ -643,15 +724,40 @@ const MeetingRoom = () => {
                     break;
                 case 'screen-share':
                     console.log('Screen share update from:', sender_id, data.isSharing);
-                    setScreenSharingUser(data.isSharing ? sender_id : null);
+                    const newPresenter = data.isSharing ? sender_id : null;
+                    setScreenSharingUser(newPresenter);
+                    screenSharingUserRef.current = newPresenter;
                     break;
                 case 'screen-share-started':
                     console.log('Screen share started by:', sender_id);
                     setScreenSharingUser(sender_id);
+                    screenSharingUserRef.current = sender_id;
+
+                    // If a companion starts sharing, we need to establish PeerConnections
+                    // If I am a normal user, I connect to the presenter
+                    // If I am a companion and I am the presenter, I connect to everyone
+                    const remoteId = sender_id;
+                    if (remoteId !== myPeerId.current) {
+                        const meIsCompanion = localStorage.getItem('joinMode') === 'companion';
+                        const remoteIsCompanion = peerNamesRef.current[remoteId + '_mode'] === 'companion';
+
+                        // We connect if:
+                        // 1. We are both normal
+                        // 2. OR one is a companion but it's the presenter
+                        const shouldConnect = (!remoteIsCompanion && !meIsCompanion) ||
+                            (remoteId === sender_id) || // Remote is the new presenter
+                            (myPeerId.current === sender_id); // I am the new presenter
+
+                        if (shouldConnect && !peerConnections.current[remoteId]) {
+                            const isOfferer = myPeerId.current < remoteId;
+                            createPeerConnection(remoteId, isOfferer);
+                        }
+                    }
                     break;
                 case 'screen-share-stopped':
                     console.log('Screen share stopped by:', sender_id);
                     setScreenSharingUser(null);
+                    screenSharingUserRef.current = null;
                     break;
                 case 'mic-status':
                     console.log('Mic status update from:', sender_id, data.isMuted);
@@ -689,11 +795,23 @@ const MeetingRoom = () => {
                     break;
                 case 'kicked':
                     if (data.reason === 'session-replaced') {
-                        console.warn('Session replaced by another tab. Cleaning up media...');
-                        cleanupAllSessions();
-                        setIsRejected(true);
-                        setRejectedReason('session-replaced');
-                        setLoading(false);
+                        console.warn('Session replaced by another tab. Cleaning up signaling and UI...');
+
+                        // We ONLY cleanup media if this is truly a deep kick. 
+                        // But usually session-replaced means another tab is active.
+                        // For stability, we stop signaling but keep local media for now unless truly leaving.
+                        if (socket.current === currentSocket) {
+                            socket.current = null; // Detach current socket
+                            currentSocket.close();
+                            setIsRejected(true);
+                            setRejectedReason('session-replaced');
+                            setLoading(false);
+                            // We don't call cleanupAllSessions() here to avoid killing camera if it was just a signaling blip
+                            // Instead we only cleanup WebRTC state
+                            if (peerConnections.current) {
+                                Object.keys(peerConnections.current).forEach(pid => removePeer(pid));
+                            }
+                        }
                     } else {
                         alert(data.message || 'You were removed by the host');
                         window.location.href = '/';
@@ -728,7 +846,13 @@ const MeetingRoom = () => {
                     console.log('Join approved! Initializing media...');
                     setIsWaiting(false);
                     // Now that we are approved, we MUST start the camera before WebRTC kicks in
-                    const stream = await initializeLocalMedia();
+                    // IF Companion, skip media and send ready immediately
+                    const currentJoinMode = localStorage.getItem('joinMode') || 'normal';
+                    let stream = null;
+                    if (currentJoinMode === 'normal') {
+                        stream = await initializeLocalMedia();
+                    }
+
                     setLoading(false);
                     if (socket.current?.readyState === WebSocket.OPEN) {
                         const email = authUser?.email || '';
@@ -737,7 +861,8 @@ const MeetingRoom = () => {
                             type: 'media-ready',
                             roomId: room_id,
                             username: localStorage.getItem('username') || 'Guest',
-                            role: role
+                            role: role,
+                            mode: currentJoinMode
                         }));
                     }
                     break;
@@ -752,15 +877,6 @@ const MeetingRoom = () => {
                 default:
                     break;
             }
-        };
-
-        socket.current.onclose = () => {
-            console.log('Signaling WebSocket closed');
-        };
-
-        socket.current.onerror = (err) => {
-            console.error('Signaling WebSocket error:', err);
-            setError('Lost connection to signaling server.');
         };
     };
 
@@ -809,6 +925,18 @@ const MeetingRoom = () => {
         // Listen for remote tracks
         pc.ontrack = (event) => {
             console.log('Received remote track from:', remotePeerId);
+
+            // COMPANION MODE RULE: Do not subscribe to remote tracks
+            const meIsCompanion = localStorage.getItem('joinMode') === 'companion';
+            if (meIsCompanion) {
+                // EXCEPTION: Allow if this user is a presenter (we want to see their screen)
+                // Use REF here to avoid stale state in callback
+                if (screenSharingUserRef.current !== remotePeerId) {
+                    console.log('Skipping remote track subscription (Companion Mode - Not Presenter)');
+                    return;
+                }
+                console.log('Subscribing to remote presentation (Companion Mode)');
+            }
 
             // Setup audio analysis for remote peer
             if (event.track.kind === 'audio') {
@@ -1201,6 +1329,19 @@ const MeetingRoom = () => {
                     }));
                 }
 
+                // COMPANION MODE: If starting a screen share, we must connect to all peers
+                // because we normally don't have PeerConnections established.
+                if (joinMode === 'companion') {
+                    console.log('Companion started screen share - Initiating connections to all peers');
+                    peers.forEach(peer => {
+                        if (peer.id !== myPeerId.current && !peerConnections.current[peer.id]) {
+                            const isOfferer = myPeerId.current < peer.id;
+                            console.log(`Creating PeerConnection to ${peer.id} as ${isOfferer ? 'initiator' : 'receiver'}`);
+                            createPeerConnection(peer.id, isOfferer);
+                        }
+                    });
+                }
+
                 // Disable camera track if it was active
                 if (localStreamRef.current) {
                     localStreamRef.current.getVideoTracks().forEach(track => track.enabled = false);
@@ -1433,7 +1574,7 @@ const MeetingRoom = () => {
                     display: 'flex',
                     background: '#f3f4f6',
                     overflow: 'hidden',
-                    padding: screenSharingUser ? '0' : '2rem',
+                    padding: (screenSharingUser || joinMode === 'companion') ? '0' : '2rem',
                     position: 'relative',
                     transition: 'all 0.3s ease'
                 }}>
@@ -1447,20 +1588,7 @@ const MeetingRoom = () => {
                                         autoPlay
                                         playsInline
                                         muted={screenSharingUser === myPeerId.current}
-                                        ref={el => {
-                                            if (el) {
-                                                let targetStream = null;
-                                                if (screenSharingUser === myPeerId.current) {
-                                                    targetStream = localStream;
-                                                } else {
-                                                    const presenter = peers.find(p => p.id === screenSharingUser);
-                                                    if (presenter) targetStream = presenter.stream;
-                                                }
-                                                if (el.srcObject !== targetStream) {
-                                                    el.srcObject = targetStream;
-                                                }
-                                            }
-                                        }}
+                                        ref={presentationVideoRef}
                                         style={{
                                             maxWidth: '100%',
                                             maxHeight: '100%',
@@ -1476,50 +1604,65 @@ const MeetingRoom = () => {
                                 </div>
                             </div>
 
-                            {/* Sidebar Thumbnails */}
-                            <div style={{
-                                width: '280px',
-                                background: '#1f2937',
-                                borderLeft: '1px solid #374151',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '1rem',
-                                padding: '1rem',
-                                overflowY: 'auto'
-                            }}>
-                                {/* Local Video as Thumbnail (if not presenting) */}
-                                {screenSharingUser !== myPeerId.current && (
-                                    <VideoTile
-                                        peerId="local"
-                                        stream={localStream}
-                                        username={localStorage.getItem('username') || 'You'}
-                                        isMuted={isMuted}
-                                        isVideoDisabled={isVideoOff}
-                                        isHandRaised={isHandRaised}
-                                        isLocal={true}
-                                        isActiveSpeaker={activeSpeakerId === 'local'}
-                                        transform="scaleX(-1)"
-                                        totalParticipants={totalParticipants}
-                                    />
-                                )}
-                                {/* Remote Peers as Thumbnails */}
-                                {peers.map(peer => (
-                                    peer.id !== screenSharingUser && (
+                            {/* Sidebar Thumbnails - Hidden for Companions who aren't presenting */}
+                            {joinMode !== 'companion' && (
+                                <div style={{
+                                    width: '280px',
+                                    background: '#1f2937',
+                                    borderLeft: '1px solid #374151',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '1rem',
+                                    padding: '1rem',
+                                    overflowY: 'auto'
+                                }}>
+                                    {/* Local Video as Thumbnail (if not presenting) */}
+                                    {screenSharingUser !== myPeerId.current && (
                                         <VideoTile
-                                            key={peer.id}
-                                            peerId={peer.id}
-                                            stream={peer.stream}
-                                            username={participantNames[peer.id] || 'Guest'}
-                                            isMuted={mutedPeers[peer.id] || false}
-                                            isVideoDisabled={cameraOffPeers[peer.id]}
-                                            isHandRaised={raisedHands[peer.id]}
-                                            isLocal={false}
-                                            isActiveSpeaker={activeSpeakerId === peer.id}
+                                            peerId="local"
+                                            stream={localStream}
+                                            username={localStorage.getItem('username') || 'You'}
+                                            isMuted={isMuted}
+                                            isVideoDisabled={isVideoOff}
+                                            isHandRaised={isHandRaised}
+                                            isLocal={true}
+                                            isActiveSpeaker={activeSpeakerId === 'local'}
+                                            transform="scaleX(-1)"
                                             totalParticipants={totalParticipants}
                                         />
-                                    )
-                                ))}
+                                    )}
+                                    {/* Remote Peers as Thumbnails - Filter out companions */}
+                                    {peers.map(peer => (
+                                        (peer.id !== screenSharingUser && peerNamesRef.current[peer.id + '_mode'] !== 'companion') && (
+                                            <VideoTile
+                                                key={peer.id}
+                                                peerId={peer.id}
+                                                stream={peer.stream}
+                                                username={participantNames[peer.id] || 'Guest'}
+                                                isMuted={mutedPeers[peer.id] || false}
+                                                isVideoDisabled={cameraOffPeers[peer.id]}
+                                                isHandRaised={raisedHands[peer.id]}
+                                                isLocal={false}
+                                                isActiveSpeaker={activeSpeakerId === peer.id}
+                                                totalParticipants={totalParticipants}
+                                            />
+                                        )
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    ) : joinMode === 'companion' ? (
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111827', color: '#fff', textAlign: 'center', padding: '2rem' }}>
+                            <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '3rem', borderRadius: '50%', marginBottom: '2rem' }}>
+                                <Monitor size={80} color="#3b82f6" />
                             </div>
+                            <h2 style={{ fontSize: '2.5rem', fontWeight: '800', marginBottom: '1rem', background: 'linear-gradient(to right, #60a5fa, #3b82f6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                                Companion Mode
+                            </h2>
+                            <p style={{ color: '#9ca3af', fontSize: '1.25rem', maxWidth: '500px', lineHeight: '1.6' }}>
+                                You're joined as a companion to participate in chat, polls, and share your screen.
+                                Camera and microphone are disabled to prevent audio feedback.
+                            </p>
                         </div>
                     ) : (
                         // Professional Adaptive Grid Layout (Zoom-Style)
@@ -1547,37 +1690,41 @@ const MeetingRoom = () => {
 
                                 return (
                                     <>
-                                        {/* Local Participant */}
-                                        <VideoTile
-                                            peerId="local"
-                                            stream={localStream}
-                                            username={localStorage.getItem('username') || 'You'}
-                                            isMuted={isMuted}
-                                            isVideoDisabled={isVideoOff}
-                                            isHandRaised={isHandRaised}
-                                            isLocal={true}
-                                            isActiveSpeaker={activeSpeakerId === 'local'}
-                                            transform={isScreenSharing ? 'none' : 'scaleX(-1)'}
-                                            maxWidth="100%"
-                                            width={tileWidth}
-                                            totalParticipants={totalParticipants}
-                                        />
-
-                                        {/* Remote Participants */}
-                                        {peers.map(peer => (
+                                        {/* Local Participant - Hide if companion */}
+                                        {joinMode !== 'companion' && (
                                             <VideoTile
-                                                key={peer.id}
-                                                peerId={peer.id}
-                                                stream={peer.stream}
-                                                username={participantNames[peer.id] || 'Guest'}
-                                                isMuted={mutedPeers[peer.id] || false}
-                                                isVideoDisabled={cameraOffPeers[peer.id]}
-                                                isHandRaised={raisedHands[peer.id]}
-                                                isLocal={false}
-                                                isActiveSpeaker={activeSpeakerId === peer.id}
+                                                peerId="local"
+                                                stream={localStream}
+                                                username={localStorage.getItem('username') || 'You'}
+                                                isMuted={isMuted}
+                                                isVideoDisabled={isVideoOff}
+                                                isHandRaised={isHandRaised}
+                                                isLocal={true}
+                                                isActiveSpeaker={activeSpeakerId === 'local'}
+                                                transform={isScreenSharing ? 'none' : 'scaleX(-1)'}
+                                                maxWidth="100%"
                                                 width={tileWidth}
                                                 totalParticipants={totalParticipants}
                                             />
+                                        )}
+
+                                        {/* Remote Participants - Filter out companions and current presenter */}
+                                        {peers.map(peer => (
+                                            (peer.id !== screenSharingUser && peerNamesRef.current[peer.id + '_mode'] !== 'companion') && (
+                                                <VideoTile
+                                                    key={peer.id}
+                                                    peerId={peer.id}
+                                                    stream={peer.stream}
+                                                    username={participantNames[peer.id] || 'Guest'}
+                                                    isMuted={mutedPeers[peer.id] || false}
+                                                    isVideoDisabled={cameraOffPeers[peer.id]}
+                                                    isHandRaised={raisedHands[peer.id]}
+                                                    isLocal={false}
+                                                    isActiveSpeaker={activeSpeakerId === peer.id}
+                                                    width={tileWidth}
+                                                    totalParticipants={totalParticipants}
+                                                />
+                                            )
                                         ))}
                                     </>
                                 );
@@ -1621,9 +1768,9 @@ const MeetingRoom = () => {
                                 </div>
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                     <div style={{ fontSize: '0.875rem', fontWeight: '600', color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                        {localStorage.getItem('username')} (You)
+                                        {localStorage.getItem('username')} {joinMode === 'companion' && '(Companion)'} (You)
                                     </div>
-                                    <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Meeting Host</div>
+                                    <div style={{ fontSize: '0.7rem', color: '#64748b' }}>{joinMode === 'companion' ? 'Participant' : 'Meeting Host'}</div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
                                     {isHandRaised && <Hand size={14} color="#fbbf24" fill="#fbbf24" />}
@@ -1647,9 +1794,9 @@ const MeetingRoom = () => {
                                     </div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{ fontSize: '0.875rem', fontWeight: '500', color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                            {participantNames[peer.id] || 'Guest'}
+                                            {participantNames[peer.id] || 'Guest'} {peerNamesRef.current[peer.id + '_mode'] === 'companion' && '(Companion)'}
                                         </div>
-                                        <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>Participant</div>
+                                        <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{peerNamesRef.current[peer.id + '_mode'] === 'companion' ? 'Companion' : 'Participant'}</div>
                                     </div>
                                     <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
                                         {raisedHands[peer.id] && <Hand size={14} color="#fbbf24" fill="#fbbf24" />}
@@ -1804,36 +1951,40 @@ const MeetingRoom = () => {
                 zIndex: 20,
                 boxShadow: '0 -4px 20px rgba(0,0,0,0.05)'
             }}>
-                <button
-                    onClick={toggleMute}
-                    style={{
-                        width: '56px', height: '56px', borderRadius: '50%', border: 'none', cursor: 'pointer',
-                        background: isMuted ? '#ef4444' : '#f1f5f9', color: isMuted ? '#fff' : '#475569',
-                        display: 'flex', justifyContent: 'center', alignItems: 'center', transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                        outline: 'none',
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 6px -1px rgba(0, 0, 0, 0.1)'; }}
-                    title={isMuted ? 'Unmute' : 'Mute'}
-                >
-                    {isMuted ? <MicOff size={24} /> : <Mic size={24} />}
-                </button>
-                <button
-                    onClick={toggleVideo}
-                    style={{
-                        width: '56px', height: '56px', borderRadius: '50%', border: 'none', cursor: 'pointer',
-                        background: isVideoOff ? '#ef4444' : '#f1f5f9', color: isVideoOff ? '#fff' : '#475569',
-                        display: 'flex', justifyContent: 'center', alignItems: 'center', transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                        outline: 'none',
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 6px -1px rgba(0, 0, 0, 0.1)'; }}
-                    title={isVideoOff ? 'Start Video' : 'Stop Video'}
-                >
-                    {isVideoOff ? <VideoOff size={24} /> : <Video size={24} />}
-                </button>
+                {joinMode !== 'companion' && (
+                    <>
+                        <button
+                            onClick={toggleMute}
+                            style={{
+                                width: '56px', height: '56px', borderRadius: '50%', border: 'none', cursor: 'pointer',
+                                background: isMuted ? '#ef4444' : '#f1f5f9', color: isMuted ? '#fff' : '#475569',
+                                display: 'flex', justifyContent: 'center', alignItems: 'center', transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                                outline: 'none',
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 6px -1px rgba(0, 0, 0, 0.1)'; }}
+                            title={isMuted ? 'Unmute' : 'Mute'}
+                        >
+                            {isMuted ? <MicOff size={24} /> : <Mic size={24} />}
+                        </button>
+                        <button
+                            onClick={toggleVideo}
+                            style={{
+                                width: '56px', height: '56px', borderRadius: '50%', border: 'none', cursor: 'pointer',
+                                background: isVideoOff ? '#ef4444' : '#f1f5f9', color: isVideoOff ? '#fff' : '#475569',
+                                display: 'flex', justifyContent: 'center', alignItems: 'center', transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                                outline: 'none',
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 6px -1px rgba(0, 0, 0, 0.1)'; }}
+                            title={isVideoOff ? 'Start Video' : 'Stop Video'}
+                        >
+                            {isVideoOff ? <VideoOff size={24} /> : <Video size={24} />}
+                        </button>
+                    </>
+                )}
 
                 {/* Recording Button */}
                 <button
@@ -1967,126 +2118,128 @@ const MeetingRoom = () => {
                 </button>
 
                 {/* Professional Background Selector */}
-                <div style={{ position: 'relative' }}>
-                    <button
-                        onClick={() => setShowBgSettings(!showBgSettings)}
-                        style={{
-                            width: '56px', height: '56px', borderRadius: '50%', border: 'none', cursor: 'pointer',
-                            background: showBgSettings ? '#3b82f6' : '#f1f5f9', color: showBgSettings ? '#fff' : '#475569',
-                            display: 'flex', justifyContent: 'center', alignItems: 'center', transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                            outline: 'none',
-                        }}
-                        onMouseEnter={(e) => { if (!showBgSettings) { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1)'; } }}
-                        onMouseLeave={(e) => { if (!showBgSettings) { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 6px -1px rgba(0, 0, 0, 0.1)'; } }}
-                        title="Background Settings"
-                    >
-                        <ImageIcon size={24} />
-                    </button>
+                {joinMode !== 'companion' && (
+                    <div style={{ position: 'relative' }}>
+                        <button
+                            onClick={() => setShowBgSettings(!showBgSettings)}
+                            style={{
+                                width: '56px', height: '56px', borderRadius: '50%', border: 'none', cursor: 'pointer',
+                                background: showBgSettings ? '#3b82f6' : '#f1f5f9', color: showBgSettings ? '#fff' : '#475569',
+                                display: 'flex', justifyContent: 'center', alignItems: 'center', transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                                outline: 'none',
+                            }}
+                            onMouseEnter={(e) => { if (!showBgSettings) { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1)'; } }}
+                            onMouseLeave={(e) => { if (!showBgSettings) { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 6px -1px rgba(0, 0, 0, 0.1)'; } }}
+                            title="Background Settings"
+                        >
+                            <ImageIcon size={24} />
+                        </button>
 
-                    {showBgSettings && (
-                        <div style={{
-                            position: 'absolute',
-                            bottom: '80px',
-                            right: '0',
-                            width: '320px',
-                            background: '#fff',
-                            borderRadius: '20px',
-                            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
-                            border: '1px solid #e5e7eb',
-                            padding: '1.5rem',
-                            zIndex: 100,
-                            animation: 'popIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)'
-                        }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-                                <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: '#111827' }}>Background Effects</h3>
-                                <button onClick={() => setShowBgSettings(false)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex' }}>
-                                    <X size={18} />
-                                </button>
-                            </div>
+                        {showBgSettings && (
+                            <div style={{
+                                position: 'absolute',
+                                bottom: '80px',
+                                right: '0',
+                                width: '320px',
+                                background: '#fff',
+                                borderRadius: '20px',
+                                boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+                                border: '1px solid #e5e7eb',
+                                padding: '1.5rem',
+                                zIndex: 100,
+                                animation: 'popIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)'
+                            }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+                                    <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: '#111827' }}>Background Effects</h3>
+                                    <button onClick={() => setShowBgSettings(false)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex' }}>
+                                        <X size={18} />
+                                    </button>
+                                </div>
 
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.75rem' }}>
-                                {/* None */}
-                                <div
-                                    onClick={() => handleBackgroundChange('none')}
-                                    style={{
-                                        cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'none' ? '#3b82f6' : '#f1f5f9'}`,
-                                        position: 'relative', aspectRatio: '16/9', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.75rem' }}>
+                                    {/* None */}
+                                    <div
+                                        onClick={() => handleBackgroundChange('none')}
+                                        style={{
+                                            cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'none' ? '#3b82f6' : '#f1f5f9'}`,
+                                            position: 'relative', aspectRatio: '16/9', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            transition: 'all 0.2s ease'
+                                        }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'none' ? '#3b82f6' : '#cbd5e1'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'none' ? '#3b82f6' : '#f1f5f9'; }}
+                                    >
+                                        <VideoOff size={24} color="#94a3b8" />
+                                        {backgroundEffect === 'none' && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
+                                        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(255,255,255,0.9)', color: '#475569', fontSize: '10px', padding: '4px', textAlign: 'center', fontWeight: '500' }}>None</div>
+                                    </div>
+
+                                    {/* Blur */}
+                                    <div
+                                        onClick={() => handleBackgroundChange('blur')}
+                                        style={{
+                                            cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'blur' ? '#3b82f6' : '#f1f5f9'}`,
+                                            position: 'relative', aspectRatio: '16/9', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            transition: 'all 0.2s ease'
+                                        }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'blur' ? '#3b82f6' : '#cbd5e1'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'blur' ? '#3b82f6' : '#f1f5f9'; }}
+                                    >
+                                        <div style={{ width: '100%', height: '100%', filter: 'blur(4px)', background: 'linear-gradient(45deg, #e2e8f0, #cbd5e1)' }}></div>
+                                        <Circle size={24} color="#fff" style={{ position: 'absolute' }} />
+                                        {backgroundEffect === 'blur' && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
+                                        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(255,255,255,0.9)', color: '#475569', fontSize: '10px', padding: '4px', textAlign: 'center', fontWeight: '500' }}>Blur</div>
+                                    </div>
+
+                                    {/* Library */}
+                                    <div
+                                        onClick={() => handleBackgroundChange('library')}
+                                        style={{
+                                            cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'image' && bgImageUrl.includes('photo-1507842217343') ? '#3b82f6' : '#f1f5f9'}`,
+                                            position: 'relative', aspectRatio: '16/9', transition: 'all 0.2s ease'
+                                        }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = (backgroundEffect === 'image' && bgImageUrl.includes('photo-1507842217343')) ? '#3b82f6' : '#cbd5e1'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = (backgroundEffect === 'image' && bgImageUrl.includes('photo-1507842217343')) ? '#3b82f6' : '#f1f5f9'; }}
+                                    >
+                                        <img src="https://images.unsplash.com/photo-1507842217343-583bb7270b66?auto=format&fit=crop&w=200&q=60" style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="Library" />
+                                        {(backgroundEffect === 'image' && bgImageUrl.includes('photo-1507842217343')) && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
+                                        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(255,255,255,0.9)', color: '#475569', fontSize: '10px', padding: '4px', textAlign: 'center', fontWeight: '500' }}>Library</div>
+                                    </div>
+
+                                    {/* Office */}
+                                    <div
+                                        onClick={() => handleBackgroundChange('office')}
+                                        style={{
+                                            cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'image' && bgImageUrl.includes('photo-1497366216548') ? '#3b82f6' : '#f1f5f9'}`,
+                                            position: 'relative', aspectRatio: '16/9', transition: 'all 0.2s ease'
+                                        }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = (backgroundEffect === 'image' && bgImageUrl.includes('photo-1497366216548')) ? '#3b82f6' : '#cbd5e1'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = (backgroundEffect === 'image' && bgImageUrl.includes('photo-1497366216548')) ? '#3b82f6' : '#f1f5f9'; }}
+                                    >
+                                        <img src="https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=200&q=60" style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="Office" />
+                                        {(backgroundEffect === 'image' && bgImageUrl.includes('photo-1497366216548')) && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
+                                        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(255,255,255,0.9)', color: '#475569', fontSize: '10px', padding: '4px', textAlign: 'center', fontWeight: '500' }}>Office</div>
+                                    </div>
+
+                                    {/* Custom Upload Tile */}
+                                    <label style={{
+                                        cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'custom' ? '#3b82f6' : '#f1f5f9'}`,
+                                        position: 'relative', aspectRatio: '16/9', background: '#f8fafc', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px',
                                         transition: 'all 0.2s ease'
                                     }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'none' ? '#3b82f6' : '#cbd5e1'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'none' ? '#3b82f6' : '#f1f5f9'; }}
-                                >
-                                    <VideoOff size={24} color="#94a3b8" />
-                                    {backgroundEffect === 'none' && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
-                                    <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(255,255,255,0.9)', color: '#475569', fontSize: '10px', padding: '4px', textAlign: 'center', fontWeight: '500' }}>None</div>
+                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'custom' ? '#3b82f6' : '#cbd5e1'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'custom' ? '#3b82f6' : '#f1f5f9'; }}
+                                    >
+                                        <Upload size={20} color="#64748b" />
+                                        <span style={{ fontSize: '10px', color: '#64748b', fontWeight: '500' }}>Custom</span>
+                                        <input type="file" accept="image/*" onChange={handleCustomBackgroundUpload} style={{ display: 'none' }} />
+                                        {backgroundEffect === 'custom' && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
+                                    </label>
                                 </div>
-
-                                {/* Blur */}
-                                <div
-                                    onClick={() => handleBackgroundChange('blur')}
-                                    style={{
-                                        cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'blur' ? '#3b82f6' : '#f1f5f9'}`,
-                                        position: 'relative', aspectRatio: '16/9', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                        transition: 'all 0.2s ease'
-                                    }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'blur' ? '#3b82f6' : '#cbd5e1'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'blur' ? '#3b82f6' : '#f1f5f9'; }}
-                                >
-                                    <div style={{ width: '100%', height: '100%', filter: 'blur(4px)', background: 'linear-gradient(45deg, #e2e8f0, #cbd5e1)' }}></div>
-                                    <Circle size={24} color="#fff" style={{ position: 'absolute' }} />
-                                    {backgroundEffect === 'blur' && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
-                                    <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(255,255,255,0.9)', color: '#475569', fontSize: '10px', padding: '4px', textAlign: 'center', fontWeight: '500' }}>Blur</div>
-                                </div>
-
-                                {/* Library */}
-                                <div
-                                    onClick={() => handleBackgroundChange('library')}
-                                    style={{
-                                        cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'image' && bgImageUrl.includes('photo-1507842217343') ? '#3b82f6' : '#f1f5f9'}`,
-                                        position: 'relative', aspectRatio: '16/9', transition: 'all 0.2s ease'
-                                    }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = (backgroundEffect === 'image' && bgImageUrl.includes('photo-1507842217343')) ? '#3b82f6' : '#cbd5e1'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = (backgroundEffect === 'image' && bgImageUrl.includes('photo-1507842217343')) ? '#3b82f6' : '#f1f5f9'; }}
-                                >
-                                    <img src="https://images.unsplash.com/photo-1507842217343-583bb7270b66?auto=format&fit=crop&w=200&q=60" style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="Library" />
-                                    {(backgroundEffect === 'image' && bgImageUrl.includes('photo-1507842217343')) && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
-                                    <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(255,255,255,0.9)', color: '#475569', fontSize: '10px', padding: '4px', textAlign: 'center', fontWeight: '500' }}>Library</div>
-                                </div>
-
-                                {/* Office */}
-                                <div
-                                    onClick={() => handleBackgroundChange('office')}
-                                    style={{
-                                        cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'image' && bgImageUrl.includes('photo-1497366216548') ? '#3b82f6' : '#f1f5f9'}`,
-                                        position: 'relative', aspectRatio: '16/9', transition: 'all 0.2s ease'
-                                    }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = (backgroundEffect === 'image' && bgImageUrl.includes('photo-1497366216548')) ? '#3b82f6' : '#cbd5e1'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = (backgroundEffect === 'image' && bgImageUrl.includes('photo-1497366216548')) ? '#3b82f6' : '#f1f5f9'; }}
-                                >
-                                    <img src="https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=200&q=60" style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="Office" />
-                                    {(backgroundEffect === 'image' && bgImageUrl.includes('photo-1497366216548')) && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
-                                    <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(255,255,255,0.9)', color: '#475569', fontSize: '10px', padding: '4px', textAlign: 'center', fontWeight: '500' }}>Office</div>
-                                </div>
-
-                                {/* Custom Upload Tile */}
-                                <label style={{
-                                    cursor: 'pointer', borderRadius: '12px', overflow: 'hidden', border: `2px solid ${backgroundEffect === 'custom' ? '#3b82f6' : '#f1f5f9'}`,
-                                    position: 'relative', aspectRatio: '16/9', background: '#f8fafc', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px',
-                                    transition: 'all 0.2s ease'
-                                }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'custom' ? '#3b82f6' : '#cbd5e1'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = backgroundEffect === 'custom' ? '#3b82f6' : '#f1f5f9'; }}
-                                >
-                                    <Upload size={20} color="#64748b" />
-                                    <span style={{ fontSize: '10px', color: '#64748b', fontWeight: '500' }}>Custom</span>
-                                    <input type="file" accept="image/*" onChange={handleCustomBackgroundUpload} style={{ display: 'none' }} />
-                                    {backgroundEffect === 'custom' && <div style={{ position: 'absolute', top: '8px', right: '8px', background: '#3b82f6', borderRadius: '50%', padding: '2px', display: 'flex' }}><Check size={12} color="#fff" /></div>}
-                                </label>
                             </div>
-                        </div>
-                    )}
-                </div>
+                        )}
+                    </div>
+                )}
 
 
 
