@@ -12,6 +12,7 @@ import Login from './pages/Login';
 import AdminDashboard from './pages/AdminDashboard';
 import TutorDashboard from './pages/TutorDashboard';
 import StudentDashboard from './pages/StudentDashboard';
+import Signup from './pages/Signup';
 
 import MeetingRoom from './pages/MeetingRoom';
 import JoinMeeting from './pages/JoinMeeting';
@@ -29,6 +30,7 @@ function App() {
           <Routes>
             {/* Login page - accessible to everyone */}
             <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<Signup />} />
 
             {/* Admin dashboard - only accessible if user is admin */}
             <Route

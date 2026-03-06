@@ -22,7 +22,7 @@ export const AuthProvider = ({ children }) => {
             try {
                 // Decode the token to extract user data
                 const decoded = jwtDecode(token);
-                
+
                 // Check if token has expired (exp is in seconds, Date.now() is in milliseconds)
                 if (decoded.exp * 1000 < Date.now()) {
                     // Token is expired - remove it and clear user
@@ -81,17 +81,52 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
+    // Function to handle user signup (includes immediate login from token)
+    const signup = async (username, email, password, role) => {
+        try {
+            const response = await api.post('/auth/signup', {
+                username,
+                email,
+                password,
+                role
+            });
+
+            const { access_token, user: userInfo } = response.data;
+
+            // If token is returned, sign them in immediately
+            if (access_token) {
+                localStorage.setItem('token', access_token);
+                // Also store username for meeting room UI
+                localStorage.setItem('username', userInfo.username);
+
+                const decoded = jwtDecode(access_token);
+                const userData = {
+                    email: decoded.sub,
+                    role: decoded.role
+                };
+                setUser(userData);
+                return userData;
+            }
+            return response.data;
+        } catch (error) {
+            console.error('Signup failed:', error);
+            throw error;
+        }
+    };
+
     // Function to handle user logout
     const logout = () => {
         // Remove token from storage
         localStorage.removeItem('token');
+        // Clear username
+        localStorage.removeItem('username');
         // Clear user state
         setUser(null);
     };
 
     // Return context provider that passes auth data to all child components
     return (
-        <AuthContext.Provider value={{ user, login, logout, loading, isAuthenticated: !!user }}>
+        <AuthContext.Provider value={{ user, login, signup, logout, loading, isAuthenticated: !!user }}>
             {children}
         </AuthContext.Provider>
     );

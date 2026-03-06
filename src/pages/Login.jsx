@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 // React Router for navigation
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 // Custom auth hook
 import { useAuth } from '../context/AuthContext';
 
@@ -88,6 +88,10 @@ const Login = () => {
                         {loading ? 'Signing in...' : 'Sign In'}
                     </button>
                 </form>
+
+                <div className="credentials-hint" style={{ marginTop: '1rem', textAlign: 'center' }}>
+                    <p>Don't have an account? <Link to="/signup" style={{ color: '#2563eb', textDecoration: 'none', fontWeight: 'bold' }}>Sign Up</Link></p>
+                </div>
 
                 {/* Demo account credentials for testing */}
                 <div className="credentials-hint">
