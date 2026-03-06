@@ -149,6 +149,8 @@ const MeetingRoom = () => {
     const peerConnections = useRef({}); // { peerId: RTCPeerConnection }
     const peerNamesRef = useRef({}); // { peerId: username }
     const myPeerId = useRef(null);
+    const myRoleRef = useRef(null);
+    const myUsernameRef = useRef(null);
     const audioContextRef = useRef(null);
     const analysersRef = useRef({}); // { peerId: { analyser, dataArray } }
     const speakerTimeoutRef = useRef(null);
@@ -538,7 +540,8 @@ const MeetingRoom = () => {
             socket.current.close();
         }
 
-        const socketUrl = `${import.meta.env.VITE_WS_URL}/${roomId}`;
+        const token = localStorage.getItem('token');
+        const socketUrl = `${import.meta.env.VITE_WS_URL}/${roomId}${token ? `?token=${token}` : ''}`;
         console.log(`Connecting to signaling server at: ${socketUrl}`);
 
         const currentSocket = new WebSocket(socketUrl);
@@ -574,14 +577,23 @@ const MeetingRoom = () => {
 
             switch (type) {
                 case 'init':
+                    // Use the stable peer_id (DB user ID) sent by the server
                     myPeerId.current = peer_id;
-                    console.log('Temporary Peer ID:', peer_id);
-                    const email = authUser?.email || '';
-                    const role = (email === 'admin@gmail.com' || authUser?.role === 'admin') ? 'admin' : 'student';
+                    console.log('Authenticated Peer ID:', peer_id);
 
-                    // We use email as the stable userId for session enforcement
-                    const stableUserId = email || peer_id;
-                    myPeerId.current = stableUserId;
+                    // Use server-provided identity with fallbacks for robustness
+                    myRoleRef.current = data.role || (authUser?.role === 'admin' ? 'admin' : 'student');
+                    myUsernameRef.current = data.username || localStorage.getItem('username') || 'Guest';
+
+                    // Also sync to reactive state for UI if needed
+                    setMyRole(myRoleRef.current);
+
+                    console.log(`Identity Sync: Name=${myUsernameRef.current}, Role=${myRoleRef.current}`);
+
+                    // Save the username locally if server provided a real one
+                    if (data.username && data.username !== 'Guest') {
+                        localStorage.setItem('username', data.username);
+                    }
 
                     // Immediately send joining info
                     const sendJoin = () => {
@@ -592,9 +604,9 @@ const MeetingRoom = () => {
                             currentSocket.send(JSON.stringify({
                                 type: 'join',
                                 roomId: room_id,
-                                userId: stableUserId,
-                                username: localStorage.getItem('username') || 'Guest',
-                                role: role,
+                                userId: myPeerId.current,
+                                username: myUsernameRef.current,
+                                role: myRoleRef.current,
                                 mode: localStorage.getItem('joinMode') || 'normal'
                             }));
                         } else if (currentSocket.readyState === WebSocket.CONNECTING) {
@@ -605,7 +617,8 @@ const MeetingRoom = () => {
                     sendJoin();
 
                     // For Admins, we can stop loading once we've initialized and sent join
-                    if (role === 'admin') {
+                    if (myRoleRef.current === 'admin') {
+                        console.log('Admin detected, clearing initialization screen');
                         setLoading(false);
                     }
                     break;
