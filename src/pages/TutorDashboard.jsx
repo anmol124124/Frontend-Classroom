@@ -6,31 +6,13 @@ import { useNavigate } from 'react-router-dom';
 
 const TutorDashboard = () => {
     const navigate = useNavigate();
-    // State for courses list
-    const [courses, setCourses] = useState([]);
-    const [loading, setLoading] = useState(true);  // Loading state while fetching
     const [error, setError] = useState('');  // Error messages
+    const [loading, setLoading] = useState(true);  // Loading state while fetching
 
     // Meeting states
     const [meetings, setMeetings] = useState([]);
     const [copyStatus, setCopyStatus] = useState('');
 
-    // Form states - for edit modal
-    const [showModal, setShowModal] = useState(false);  // Show/hide modal
-    const [currentCourse, setCurrentCourse] = useState({ title: '', description: '' });  // Course being edited
-    const [formError, setFormError] = useState('');  // Form error messages
-    const [submitting, setSubmitting] = useState(false);  // Loading state while saving
-
-    // Function to fetch all courses from backend
-    const fetchCourses = async () => {
-        try {
-            const response = await api.get('/courses/');
-            setCourses(response.data);
-        } catch (err) {
-            setError('Failed to fetch courses. Please try again.');
-            console.error(err);
-        }
-    };
 
     // Function to fetch all meetings from backend
     const fetchMeetings = async () => {
@@ -47,7 +29,7 @@ const TutorDashboard = () => {
     useEffect(() => {
         const loadData = async () => {
             setLoading(true);
-            await Promise.all([fetchCourses(), fetchMeetings()]);
+            await fetchMeetings();
             setLoading(false);
         };
         loadData();
@@ -58,48 +40,6 @@ const TutorDashboard = () => {
         navigate(`/meeting/${roomId}`);
     };
 
-    // Open modal to edit a course
-    const handleOpenEditModal = (course) => {
-        setCurrentCourse(course);
-        setShowModal(true);
-        setFormError('');
-    };
-
-    // Handle copy link to clipboard
-    const copyToClipboard = (url) => {
-        navigator.clipboard.writeText(url).then(() => {
-            setCopyStatus(url);
-            setTimeout(() => setCopyStatus(''), 2000);
-        });
-    };
-
-    // Close modal and reset form
-    const handleCloseModal = () => {
-        setShowModal(false);
-        setCurrentCourse({ title: '', description: '' });
-        setFormError('');
-    };
-
-    // Handle form submission for updating course
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setFormError('');
-        setSubmitting(true);
-
-        try {
-            // Send update request to backend
-            await api.put(`/courses/${currentCourse.id}`, currentCourse);
-            // Refresh courses list
-            await fetchCourses();
-            // Close modal
-            handleCloseModal();
-        } catch (err) {
-            // Show error if update fails
-            setFormError(err.response?.data?.detail || 'Failed to update course.');
-        } finally {
-            setSubmitting(false);
-        }
-    };
 
     // Show loading message while fetching initial data
     if (loading) return <div className="loading">Loading dashboard data...</div>;
@@ -116,41 +56,6 @@ const TutorDashboard = () => {
             {error && <div className="error-message">{error}</div>}
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2rem' }}>
-                {/* Courses table section */}
-                <div className="course-list-section">
-                    <h2>My Courses</h2>
-                    <div className="table-responsive">
-                        <table className="admin-table">
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th>Title</th>
-                                    <th>Description</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {courses.map(course => (
-                                    <tr key={course.id}>
-                                        <td>{course.id}</td>
-                                        <td>{course.title}</td>
-                                        <td>{course.description || <span className="text-muted">No description</span>}</td>
-                                        <td>
-                                            <div className="action-btns">
-                                                <button className="btn-edit" onClick={() => handleOpenEditModal(course)}>Edit</button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                ))}
-                                {courses.length === 0 && (
-                                    <tr>
-                                        <td colSpan="4" className="text-center">No courses found.</td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
 
                 {/* Meetings List section */}
                 <div className="course-list-section">
@@ -207,42 +112,6 @@ const TutorDashboard = () => {
                 </div>
             </div>
 
-            {/* Modal for Edit Course */}
-            {showModal && (
-                <div className="modal-overlay">
-                    <div className="modal-content">
-                        <h2>Edit Course</h2>
-                        {formError && <div className="error-message">{formError}</div>}
-                        <form onSubmit={handleSubmit}>
-                            <div className="form-group">
-                                <label>Course Title</label>
-                                <input
-                                    type="text"
-                                    value={currentCourse.title}
-                                    onChange={(e) => setCurrentCourse({ ...currentCourse, title: e.target.value })}
-                                    placeholder="e.g. Advanced React"
-                                    required
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label>Description</label>
-                                <textarea
-                                    value={currentCourse.description}
-                                    onChange={(e) => setCurrentCourse({ ...currentCourse, description: e.target.value })}
-                                    placeholder="Enter course details..."
-                                    rows="4"
-                                />
-                            </div>
-                            <div className="modal-actions">
-                                <button type="button" className="btn-secondary" onClick={handleCloseModal}>Cancel</button>
-                                <button type="submit" className="btn-primary" disabled={submitting}>
-                                    {submitting ? 'Saving...' : 'Update Course'}
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
         </div>
     );
 };

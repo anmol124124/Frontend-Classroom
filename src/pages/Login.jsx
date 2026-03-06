@@ -51,8 +51,8 @@ const Login = () => {
     return (
         <div className="login-container">
             <div className="login-card">
-                <h1>Course Era</h1>
-                <p>Sign in to manage your courses</p>
+                <h1>MeetNow</h1>
+                <p>Sign in to join your meetings</p>
 
                 {/* Show error message if login failed */}
                 {error && <div className="error-message">{error}</div>}
