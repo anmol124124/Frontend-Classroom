@@ -18,8 +18,12 @@ const Navbar = () => {
         navigate('/login');  // Go back to login page
     };
 
-    // Don't show navbar if user is not logged in OR if we are on the login page
-    if (!user || location.pathname === '/login') return null;
+    // Check for embedded mode in URL query params
+    const queryParams = new URLSearchParams(location.search);
+    const isEmbedded = queryParams.get('embedded') === 'true';
+
+    // Don't show navbar if user is not logged in OR if we are on the login page OR if embedded
+    if (!user || location.pathname === '/login' || isEmbedded) return null;
 
     return (
         <nav className="navbar">

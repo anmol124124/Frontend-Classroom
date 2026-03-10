@@ -13,10 +13,26 @@
   --radius: 12px;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+html,
+body,
+#root,
+.app-container {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: flex-start !important;
+  align-items: stretch !important;
+  text-align: left !important;
+}
+
+#root {
+  display: flex !important;
+  flex-direction: column !important;
 }
 
 body {

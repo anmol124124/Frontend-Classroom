@@ -13,35 +13,77 @@ export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null);
     // State to track if we're still loading authentication info on startup
     const [loading, setLoading] = useState(true);
+    // State to store authentication errors (e.g. invalid embedded token)
+    const [authError, setAuthError] = useState(null);
 
     // useEffect: Runs when component mounts - Check if user is already logged in
     useEffect(() => {
-        // Try to get saved token from browser's local storage
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlToken = urlParams.get('token');
+        const isEmbedded = urlParams.get('embedded') === 'true';
+
+        if (urlToken && isEmbedded) {
+            console.log('Embedded session detected, initializing...');
+
+            try {
+                const decoded = jwtDecode(urlToken);
+
+                // CRITICAL: Check for token expiration
+                if (decoded.exp * 1000 < Date.now()) {
+                    console.error('Embedded token expired');
+                    setAuthError('Authentication Failed: Token Expired');
+                    setLoading(false);
+                    return;
+                }
+
+                const email = decoded.sub;
+                localStorage.setItem('token', urlToken);
+
+                // Ensure a username exists in localStorage for signaling
+                if (!localStorage.getItem('username')) {
+                    const extractedUsername = email.split('@')[0];
+                    localStorage.setItem('username', extractedUsername);
+                }
+
+                setUser({
+                    email: email,
+                    role: decoded.role || 'student'
+                });
+                setAuthError(null);
+                setLoading(false);
+                return; // Direct return to avoid double-processing
+            } catch (error) {
+                console.error('Failed to decode embedded token:', error);
+                setAuthError('Authentication Failed: Invalid Token');
+                setLoading(false);
+                return;
+            }
+        }
+
+        // Standard login flow
         const token = localStorage.getItem('token');
         if (token) {
             try {
-                // Decode the token to extract user data
                 const decoded = jwtDecode(token);
-
-                // Check if token has expired (exp is in seconds, Date.now() is in milliseconds)
                 if (decoded.exp * 1000 < Date.now()) {
-                    // Token is expired - remove it and clear user
                     localStorage.removeItem('token');
                     setUser(null);
                 } else {
-                    // Token is still valid - restore user session
+                    const email = decoded.sub;
+                    // Restore username if missing
+                    if (!localStorage.getItem('username') && email) {
+                        localStorage.setItem('username', email.split('@')[0]);
+                    }
                     setUser({
-                        email: decoded.sub,  // 'sub' claim contains the email
+                        email: email,
                         role: decoded.role
                     });
                 }
             } catch (error) {
-                // Token is corrupted or invalid
                 console.error('Failed to decode token:', error);
                 localStorage.removeItem('token');
             }
         }
-        // Finished checking - loading is complete
         setLoading(false);
     }, []);
 
@@ -74,6 +116,12 @@ export const AuthProvider = ({ children }) => {
 
             // Update user state
             setUser(userData);
+
+            // Ensure username is in localStorage
+            if (!localStorage.getItem('username')) {
+                localStorage.setItem('username', userData.email.split('@')[0]);
+            }
+
             return userData;
         } catch (error) {
             console.error('Login failed:', error);
@@ -126,7 +174,7 @@ export const AuthProvider = ({ children }) => {
 
     // Return context provider that passes auth data to all child components
     return (
-        <AuthContext.Provider value={{ user, login, signup, logout, loading, isAuthenticated: !!user }}>
+        <AuthContext.Provider value={{ user, login, signup, logout, loading, authError, isAuthenticated: !!user }}>
             {children}
         </AuthContext.Provider>
     );
