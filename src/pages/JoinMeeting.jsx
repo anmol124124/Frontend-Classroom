@@ -1,10 +1,24 @@
 import React, { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 const JoinMeeting = () => {
     const { room_id } = useParams();
     const navigate = useNavigate();
     const [name, setName] = useState('');
+    const { user, isAuthenticated } = useAuth();
+
+    React.useEffect(() => {
+        if (isAuthenticated && user) {
+            console.log('User already authenticated, bypassing name prompt...');
+            // Ensure username is set if somehow missing (though AuthContext handles it now)
+            if (!localStorage.getItem('username')) {
+                localStorage.setItem('username', user.email.split('@')[0]);
+            }
+            localStorage.setItem('joinMode', 'normal');
+            navigate(`/meeting/${room_id}`);
+        }
+    }, [isAuthenticated, user, navigate, room_id]);
 
     const handleJoin = (mode) => {
         if (name.trim()) {

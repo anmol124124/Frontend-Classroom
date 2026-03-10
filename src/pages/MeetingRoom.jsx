@@ -423,11 +423,13 @@ const MeetingRoom = () => {
 
     useEffect(() => {
         const username = localStorage.getItem('username');
-        const email = authUser?.email || '';
-        const role = (email === 'admin@gmail.com' || authUser?.role === 'admin') ? 'admin' : 'student';
+        const role = (authUser?.role === 'admin' || authUser?.role === 'tutor') ? authUser.role : 'student';
         setMyRole(role);
 
-        if (!username) {
+        const urlParams = new URLSearchParams(window.location.search);
+        const isEmbedded = urlParams.get('embedded') === 'true';
+
+        if (!username && !isEmbedded) {
             navigate(`/join/${room_id}`);
             return;
         }
@@ -616,9 +618,9 @@ const MeetingRoom = () => {
                     };
                     sendJoin();
 
-                    // For Admins, we can stop loading once we've initialized and sent join
-                    if (myRoleRef.current === 'admin') {
-                        console.log('Admin detected, clearing initialization screen');
+                    // For Hosts (Admin/Tutor), we can stop loading once we've initialized and sent join
+                    if (myRoleRef.current === 'admin' || myRoleRef.current === 'tutor') {
+                        console.log('Host detected, clearing initialization screen');
                         setLoading(false);
                     }
                     break;
@@ -868,8 +870,7 @@ const MeetingRoom = () => {
 
                     setLoading(false);
                     if (socket.current?.readyState === WebSocket.OPEN) {
-                        const email = authUser?.email || '';
-                        const role = (email === 'admin@gmail.com' || authUser?.role === 'admin') ? 'admin' : 'student';
+                        const role = (authUser?.role === 'admin' || authUser?.role === 'tutor') ? authUser.role : 'student';
                         socket.current.send(JSON.stringify({
                             type: 'media-ready',
                             roomId: room_id,
@@ -1087,7 +1088,7 @@ const MeetingRoom = () => {
     };
 
     const handleRemoveParticipant = (targetUserId) => {
-        if (myRole !== 'admin') return;
+        if (myRole !== 'admin' && myRole !== 'tutor') return;
 
         if (socket.current?.readyState === WebSocket.OPEN) {
             socket.current.send(JSON.stringify({
@@ -1299,11 +1300,24 @@ const MeetingRoom = () => {
     };
 
     const leaveMeeting = () => {
-
         if (isRecording) {
             stopRecording();
         }
-        navigate(-1);
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const isEmbedded = urlParams.get('embedded') === 'true';
+
+        if (isEmbedded) {
+            window.parent.postMessage({ type: 'meeting-ended' }, '*');
+        }
+
+        // Redirect based on role instead of history back
+        if (authUser) {
+            const dashboardPath = authUser.role === 'admin' ? '/admin' : authUser.role === 'tutor' ? '/tutor' : '/student-dashboard';
+            navigate(dashboardPath);
+        } else {
+            navigate('/');
+        }
     };
 
     const toggleScreenShare = async () => {
@@ -1425,7 +1439,14 @@ const MeetingRoom = () => {
         <div className="error-container" style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', padding: '2rem' }}>
             <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>⚠️</div>
             <p className="error-message" style={{ fontSize: '1.25rem', marginBottom: '2rem' }}>{error}</p>
-            <button className="btn-secondary" onClick={() => navigate(-1)} style={{ padding: '0.8rem 2rem', borderRadius: '8px', cursor: 'pointer' }}>Return to Dashboard</button>
+            <button className="btn-secondary" onClick={() => {
+                if (authUser) {
+                    const path = authUser.role === 'admin' ? '/admin' : authUser.role === 'tutor' ? '/tutor' : '/student-dashboard';
+                    navigate(path);
+                } else {
+                    navigate('/');
+                }
+            }} style={{ padding: '0.8rem 2rem', borderRadius: '8px', cursor: 'pointer' }}>Return to Dashboard</button>
         </div>
     );
 
@@ -1455,7 +1476,14 @@ const MeetingRoom = () => {
                             {isSessionReplaced ? 'Reconnect This Tab' : 'Try Again'}
                         </button>
                         <button
-                            onClick={() => window.location.href = '/'}
+                            onClick={() => {
+                                if (authUser) {
+                                    const path = authUser.role === 'admin' ? '/admin' : authUser.role === 'tutor' ? '/tutor' : '/student-dashboard';
+                                    window.location.href = path;
+                                } else {
+                                    window.location.href = '/';
+                                }
+                            }}
                             style={{ background: 'transparent', color: '#9ca3af', padding: '0.75rem', borderRadius: '14px', fontWeight: '600', border: '1px solid #374151', cursor: 'pointer', fontSize: '0.875rem' }}
                         >
                             Return to Dashboard
@@ -2305,6 +2333,41 @@ const MeetingRoom = () => {
                         <Hand size={16} fill="currentColor" />
                     </div>
                     <span>{toast.message}</span>
+
+                    {toast.type === 'join-request' && (
+                        <div style={{ display: 'flex', gap: '0.5rem', marginLeft: '0.5rem' }}>
+                            <button
+                                onClick={() => approveUser(toast.targetUserId)}
+                                style={{
+                                    background: '#10b981',
+                                    color: '#fff',
+                                    border: 'none',
+                                    padding: '0.4rem 0.8rem',
+                                    borderRadius: '8px',
+                                    cursor: 'pointer',
+                                    fontSize: '0.75rem',
+                                    fontWeight: 'bold'
+                                }}
+                            >
+                                Approve
+                            </button>
+                            <button
+                                onClick={() => rejectUser(toast.targetUserId)}
+                                style={{
+                                    background: '#ef4444',
+                                    color: '#fff',
+                                    border: 'none',
+                                    padding: '0.4rem 0.8rem',
+                                    borderRadius: '8px',
+                                    cursor: 'pointer',
+                                    fontSize: '0.75rem',
+                                    fontWeight: 'bold'
+                                }}
+                            >
+                                Reject
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
             <style>{`
